@@ -7,7 +7,7 @@
 #include <windows.h>
 #endif
 
-#define FILE_BUFFER 1048576
+#define FILE_BUFFER_LEN 65536
 #define RESIZE_FACTOR 1.2f
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -18,13 +18,15 @@ JsonReader::JsonReader() { clear(); }
 JsonReader::~JsonReader()
 {
     clear();
+    m_cancel = false;
 }
 
 void JsonReader::clear()
 {
     m_useLocale = false;
+    m_notifyProgress = false;
     m_currentPublisher = nullptr;
-    m_input.release();
+    m_input.clear();
     clearStrings();
     unsubscribe();
 }
@@ -131,6 +133,11 @@ void JsonReader::parseValue(size_t pathLen, ARRAY_ITEM* arrayItem)
             arrayItem->setValue(elemValue);
     }
     m_path.isAscii = isPathAscii;
+
+    if (m_notifyProgress)
+        m_input.notifyProgress();
+    if (m_cancel)
+        throwException("The process has been cancelled.");
 }
 
 void JsonReader::parseString(STR& text)
@@ -183,29 +190,30 @@ bool JsonReader::isNumericCharacter(char ch)
 
 bool JsonReader::parseTrue()
 {
-    return (m_input.getCurrentChar() == 't' && m_input.getNextChar(true) == 'r' &&
-        m_input.getNextChar(true) == 'u' && m_input.getNextChar(true) == 'e');
+    return (m_input.getCurrentChar() == 't' && m_input.getNextChar(true) == 'r' && m_input.getNextChar(true) == 'u' &&
+            m_input.getNextChar(true) == 'e');
 }
 
 bool JsonReader::parseFalse()
 {
-    return (m_input.getCurrentChar() == 'f' && m_input.getNextChar(true) == 'a' &&
-        m_input.getNextChar(true) == 'l' && m_input.getNextChar(true) == 's' && m_input.getNextChar(true) == 'e');
+    return (m_input.getCurrentChar() == 'f' && m_input.getNextChar(true) == 'a' && m_input.getNextChar(true) == 'l' &&
+            m_input.getNextChar(true) == 's' && m_input.getNextChar(true) == 'e');
 }
 
 bool JsonReader::parseNull()
 {
-    return (m_input.getCurrentChar() == 'n' && m_input.getNextChar(true) == 'u' &&
-        m_input.getNextChar(true) == 'l' && m_input.getNextChar(true) == 'l');
+    return (m_input.getCurrentChar() == 'n' && m_input.getNextChar(true) == 'u' && m_input.getNextChar(true) == 'l' &&
+            m_input.getNextChar(true) == 'l');
 }
 
 bool JsonReader::readFile(const char* fileFullPath) { return read(fileFullPath, true); }
 
-bool JsonReader::readBuffer(const char* bufferUtf8) { return read(bufferUtf8, false); }
+bool JsonReader::readBuffer(const char* buffer) { return read(buffer, false); }
 
 bool JsonReader::read(const char* source, bool isFile, std::set<std::wstring>* pathList)
 {
     bool succeeded = true;
+    m_cancel = false;
     try
     {
         clearStrings();
@@ -215,8 +223,8 @@ bool JsonReader::read(const char* source, bool isFile, std::set<std::wstring>* p
         if (pathList)
         {
             // Store unique JSON paths in array 'pathList'.
-            std::function<void()> callback = [pathList, this]() { pathList->insert(getCurrentElementPathWide()); };
-            std::function<void(const wchar_t*)> funcPair = [pathList, this](const wchar_t*)
+            std::function<void()> callback = [&]() { pathList->insert(getCurrentElementPathWide()); };
+            std::function<void(const wchar_t*)> funcPair = [&](const wchar_t*)
             {
                 pathList->insert(getCurrentElementPathWide());
             };
@@ -225,18 +233,22 @@ bool JsonReader::read(const char* source, bool isFile, std::set<std::wstring>* p
             onPair((const char*)nullptr, funcPair);
         }
 
-        m_input.getNextChar();
-        if (!m_input.isEOF())
+        if (m_input.findFirstChar())
             parseValue(0);
+        if (m_notifyProgress)
+            m_input.notifyProgressEnd();
     }
     catch (std::exception& e)
     {
         std::ostringstream description;
         description << e.what();
-        if (m_input.getPosition() > 0)
-            description << " Byte Position: " << m_input.getPosition() << ".";
-        if (strlen(m_path.str) > 0)
-            description << " JSON path: '" << m_path.str << "'.";
+        if (!m_cancel)
+        {
+            if (m_input.getPosition() > 0)
+                description << " Byte Position: " << m_input.getPosition() << ".";
+            if (strlen(m_path.str) > 0)
+                description << " JSON path: '" << m_path.str << "'.";
+        }
         m_errDescription = description.str();
         succeeded = false;
     }
@@ -293,9 +305,9 @@ bool JsonReader::getPathsFromFile(const char* fileFullPath, std::set<std::wstrin
     return read(fileFullPath, true, &paths);
 }
 
-bool JsonReader::getPathsFromBuffer(const char* bufferUtf8, std::set<std::wstring>& paths)
+bool JsonReader::getPathsFromBuffer(const char* buffer, std::set<std::wstring>& paths)
 {
-    return read(bufferUtf8, false, &paths);
+    return read(buffer, false, &paths);
 }
 
 void JsonReader::throwException(const char* format, ...)
@@ -396,251 +408,257 @@ void JsonReader::onPair(const char* elementUtf8, std::function<void(const wchar_
 {
     m_onPair.subscribe(elementUtf8, new Callback1(callback));
 }
+void JsonReader::onProgress(int step, std::function<void(int progress)> progressCallback)
+{
+    m_notifyProgress = ((step > 0 && step < 100) && progressCallback != nullptr);
+    if (m_notifyProgress)
+        m_input.setProgressParams(step, progressCallback);
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // class JsonReader::TextConverter
 
 JsonReader::TextConverter::TextConverter()
 {
-    m_narrowMaxLen = 1;
-    m_narrowString = new char[m_narrowMaxLen + 1];
-    m_narrowString[0] = 0;
-    m_wideMaxLen = 1;
-    m_wideString = new wchar_t[m_wideMaxLen + 1];
-    m_wideString[0] = 1;
+    m_lenMaxNarrow = 1;
+    m_bufferNarrow = new char[m_lenMaxNarrow + 1];
+    m_bufferNarrow[0] = 0;
+    m_lenMaxWide = 1;
+    m_bufferWide = new wchar_t[m_lenMaxWide + 1];
+    m_bufferWide[0] = 0;
 }
 
 JsonReader::TextConverter::~TextConverter()
 {
-    if (m_narrowString)
-        delete[] m_narrowString;
-    if (m_wideString)
-        delete[] m_wideString;
+    if (m_bufferNarrow)
+        delete[] m_bufferNarrow;
+    if (m_bufferWide)
+        delete[] m_bufferWide;
 }
 
-const char* JsonReader::TextConverter::MultiByteToUtf8(const char* multibyte, const size_t multibyteLen, size_t* outLen)
+const char* JsonReader::TextConverter::WideToUtf8(const wchar_t* bufferWide, const size_t lenWide, size_t* lenOut)
 {
-    if (!multibyte)
+    if (!bufferWide)
         return nullptr;
 
-    if (multibyteLen == 0)
+    if (lenWide == 0)
     {
-        m_narrowString[0] = 0;
-        return m_narrowString;
-    }
-
-    size_t length = 0;
-    mbstate_t state = { 0 };
-#ifdef USE_WINAPI
-    mbsrtowcs_s(&length, nullptr, 0, &multibyte, multibyteLen, &state);
-#else
-    length = std::mbsrtowcs(nullptr, &multibyte, multibyteLen, &state);
-#endif
-
-    if (length == 0 || length == static_cast<size_t>(-1))
-        return nullptr;
-
-    if (length > m_wideMaxLen)
-    {
-        if (m_wideString)
-            delete[] m_wideString;
-        m_wideMaxLen = length;
-        m_wideString = new wchar_t[m_wideMaxLen + 1];
-        m_wideString[0] = 0;
-    }
-
-    state = { 0 };
-#ifdef USE_WINAPI
-    mbsrtowcs_s(&length, m_wideString, length, &multibyte, multibyteLen, &state);
-    length--; // do not include the null terminator.
-#else
-    const char* src = &(multibyte[0]);
-    std::mbsrtowcs(m_wideString, (const char**)&src, multibyteLen, &state);
-#endif
-    m_wideString[length] = 0;
-    return WideToUtf8(m_wideString, length, outLen);
-}
-
-const char* JsonReader::TextConverter::Utf8ToMultiByte(const char* utf8, const size_t utf8Len, size_t* outLen)
-{
-    if (!utf8)
-        return nullptr;
-
-    if (utf8Len == 0)
-    {
-        m_narrowString[0] = 0;
-        return m_narrowString;
-    }
-
-    size_t length = 0;
-    size_t wideLen = 0;
-
-    const wchar_t* wideString = Utf8ToWide(utf8, utf8Len, &wideLen);
-
-#ifdef USE_WINAPI
-    wcstombs_s(&length, nullptr, 0, wideString, 0);
-#else
-    mbstate_t state = { 0 };
-    length = std::wcsrtombs(nullptr, (const wchar_t**)&wideString, wideLen, &state);
-#endif
-
-    if (length == 0 || length == static_cast<size_t>(-1))
-        return nullptr;
-
-    if (length > m_narrowMaxLen)
-    {
-        if (m_narrowString)
-            delete[] m_narrowString;
-        m_narrowMaxLen = length;
-        m_narrowString = new char[m_narrowMaxLen + 1];
-        m_narrowString[0] = 0;
-    }
-
-#ifdef USE_WINAPI
-    wcstombs_s(&length, m_narrowString, m_narrowMaxLen, wideString, length);
-    length--; // do not include the null terminator.
-#else
-    state = { 0 };
-    std::wcsrtombs(m_narrowString, (const wchar_t**)&wideString, length, &state);
-#endif
-    m_narrowString[length] = 0;
-    if (outLen)
-        (*outLen) = length - 1;
-    return m_narrowString;
-}
-
-void JsonReader::TextConverter::Utf8ToMultiByte(const std::string utf8, std::string& str)
-{
-    const char* multibyte = Utf8ToMultiByte(utf8.c_str(), (int)utf8.length());
-    if (multibyte)
-        str = multibyte;
-    else
-        str.clear();
-}
-
-const char* JsonReader::TextConverter::WideToUtf8(const wchar_t* wide, const size_t wideLen, size_t* outLen)
-{
-    if (!wide)
-        return nullptr;
-
-    if (wideLen == 0)
-    {
-        m_narrowString[0] = 0;
-        return m_narrowString;
+        m_bufferNarrow[0] = 0;
+        return m_bufferNarrow;
     }
 
     size_t length = 0;
 #ifdef USE_WINAPI
-    length = WideCharToMultiByte(CP_UTF8, 0, wide, (int)wideLen, nullptr, 0, nullptr, nullptr);
+    length = WideCharToMultiByte(CP_UTF8, 0, bufferWide, (int)lenWide, nullptr, 0, nullptr, nullptr);
 #else
-    auto p = reinterpret_cast<const wchar_t*>(wide);
-    m_str = m_codecvt.to_bytes(p, p + wideLen);
+    auto p = reinterpret_cast<const wchar_t*>(bufferWide);
+    m_str = m_codecvt.to_bytes(p, p + lenWide);
     length = m_str.length();
 #endif
 
     if (length == 0)
         return nullptr;
 
-    if (length > m_narrowMaxLen)
+    if (length > m_lenMaxNarrow)
     {
-        if (m_narrowString)
-            delete[] m_narrowString;
-        m_narrowMaxLen = length;
-        m_narrowString = new char[m_narrowMaxLen + 1];
+        if (m_bufferNarrow)
+            delete[] m_bufferNarrow;
+        m_lenMaxNarrow = length;
+        m_bufferNarrow = new char[m_lenMaxNarrow + 1];
     }
 
-    if (outLen)
-        (*outLen) = length - 1;
+    if (lenOut)
+        (*lenOut) = length - 1;
 
 #ifdef USE_WINAPI
-    WideCharToMultiByte(CP_UTF8, 0, wide, (int)wideLen, m_narrowString, (int)length, nullptr, nullptr);
-    m_narrowString[length] = 0;
-    return m_narrowString;
+    WideCharToMultiByte(CP_UTF8, 0, bufferWide, (int)lenWide, m_bufferNarrow, (int)length, nullptr, nullptr);
+    m_bufferNarrow[length] = 0;
+    return m_bufferNarrow;
 #else
     return m_str.c_str();
 #endif
 }
 
-const wchar_t* JsonReader::TextConverter::Utf8ToWide(const char* utf8, const size_t utf8Len, size_t* outLen)
+const wchar_t* JsonReader::TextConverter::Utf8ToWide(const char* bufferUtf8, const size_t lenUtf8, size_t* lenOut)
 {
-    if (!utf8)
+    if (!bufferUtf8)
         return nullptr;
 
-    if (utf8Len == 0)
+    if (lenUtf8 == 0)
     {
-        m_wideString[0] = 0;
-        return m_wideString;
+        m_bufferWide[0] = 0;
+        return m_bufferWide;
     }
 
     size_t length = 0;
 #ifdef USE_WINAPI
-    length = MultiByteToWideChar(CP_UTF8, 0, utf8, (int)utf8Len, nullptr, 0);
+    length = MultiByteToWideChar(CP_UTF8, 0, bufferUtf8, (int)lenUtf8, nullptr, 0);
 #else
-    m_wstr = m_codecvt.from_bytes(utf8);
+    m_wstr = m_codecvt.from_bytes(bufferUtf8);
     length = m_wstr.length();
 #endif
 
     if (length == 0)
         return nullptr;
 
-    if (length > m_wideMaxLen)
+    if (length > m_lenMaxWide)
     {
-        if (m_wideString)
-            delete[] m_wideString;
-        m_wideMaxLen = length;
-        m_wideString = new wchar_t[m_wideMaxLen + 1];
-        m_wideString[0] = 0;
+        if (m_bufferWide)
+            delete[] m_bufferWide;
+        m_lenMaxWide = length;
+        m_bufferWide = new wchar_t[m_lenMaxWide + 1];
+        m_bufferWide[0] = 0;
     }
 
-    if (outLen)
-        (*outLen) = length - 1;
+    if (lenOut)
+        (*lenOut) = length - 1;
 
 #ifdef USE_WINAPI
-    MultiByteToWideChar(CP_UTF8, 0, utf8, -1, m_wideString, (int)length);
-    m_wideString[length] = 0;
-    return m_wideString;
+    MultiByteToWideChar(CP_UTF8, 0, bufferUtf8, -1, m_bufferWide, (int)length);
+    m_bufferWide[length] = 0;
+    return m_bufferWide;
 #else
     return m_wstr.c_str();
 #endif
 }
 
-void JsonReader::TextConverter::Utf8ToWide(const std::string utf8, std::wstring& wstr)
+void JsonReader::TextConverter::Utf8ToWide(const std::string stringUtf8, std::wstring& stringWide)
 {
 #ifdef USE_WINAPI
-    const wchar_t* wide = nullptr;
-    wide = Utf8ToWide(utf8.c_str(), utf8.length());
-    if (wide)
-        wstr = wide;
+    const wchar_t* bufferWide = nullptr;
+    bufferWide = Utf8ToWide(stringUtf8.c_str(), stringUtf8.length());
+    if (bufferWide)
+        stringWide = bufferWide;
     else
-        wstr.clear();
+        stringWide.clear();
 #else
-    wstr = m_codecvt.from_bytes(utf8);
+    stringWide = m_codecvt.from_bytes(stringUtf8);
 #endif
 }
 
-const char* JsonReader::TextConverter::CodePointToUtf8(const uint32_t codePoint, size_t& outLen)
+const char* JsonReader::TextConverter::MultiByteToUtf8(const char* bufferMB, const size_t lenMB, size_t* lenOut)
 {
-#ifdef USE_WINAPI
-    outLen = WideCharToMultiByte(CP_UTF8, 0, (const wchar_t*)&codePoint, 2, NULL, 0, NULL, NULL);
-
-    if (outLen == 0)
+    if (!bufferMB)
         return nullptr;
 
-    if (outLen > m_narrowMaxLen)
+    if (lenMB == 0)
     {
-        if (m_narrowString)
-            delete[] m_narrowString;
-        m_narrowMaxLen = outLen;
-        m_narrowString = new char[m_narrowMaxLen + 1];
-        m_narrowString[0] = 0;
+        m_bufferNarrow[0] = 0;
+        return m_bufferNarrow;
     }
 
-    WideCharToMultiByte(CP_UTF8, 0, (const wchar_t*)&codePoint, 2, m_narrowString, (int)outLen, NULL, NULL);
-    outLen--; // do not include the null terminator.
-    return m_narrowString;
+    size_t length = 0;
+    mbstate_t state = {};
+#ifdef USE_WINAPI
+    mbsrtowcs_s(&length, nullptr, 0, &bufferMB, lenMB, &state);
+#else
+    length = std::mbsrtowcs(nullptr, &bufferMB, lenMB, &state);
+#endif
+
+    if (length == 0 || length == static_cast<size_t>(-1))
+        return nullptr;
+
+    if (length > m_lenMaxWide)
+    {
+        if (m_bufferWide)
+            delete[] m_bufferWide;
+        m_lenMaxWide = length;
+        m_bufferWide = new wchar_t[m_lenMaxWide + 1];
+        m_bufferWide[0] = 0;
+    }
+
+    state = {};
+#ifdef USE_WINAPI
+    mbsrtowcs_s(&length, m_bufferWide, length, &bufferMB, lenMB, &state);
+    length--; // do not include the null terminator.
+#else
+    const char* src = &(bufferMB[0]);
+    std::mbsrtowcs(m_bufferWide, (const char**)&src, lenMB, &state);
+#endif
+    m_bufferWide[length] = 0;
+    return WideToUtf8(m_bufferWide, length, lenOut);
+}
+
+const char* JsonReader::TextConverter::Utf8ToMultiByte(const char* bufferUtf8, const size_t lenUtf8, size_t* lenOut)
+{
+    if (!bufferUtf8)
+        return nullptr;
+
+    if (lenUtf8 == 0)
+    {
+        m_bufferNarrow[0] = 0;
+        return m_bufferNarrow;
+    }
+
+    size_t length = 0;
+    size_t lenWide = 0;
+
+    const wchar_t* bufferWide = Utf8ToWide(bufferUtf8, lenUtf8, &lenWide);
+
+#ifdef USE_WINAPI
+    wcstombs_s(&length, nullptr, 0, bufferWide, 0);
+#else
+    mbstate_t state = {};
+    length = std::wcsrtombs(nullptr, (const wchar_t**)&bufferWide, lenWide, &state);
+#endif
+
+    if (length == 0 || length == static_cast<size_t>(-1))
+        return nullptr;
+
+    if (length > m_lenMaxNarrow)
+    {
+        if (m_bufferNarrow)
+            delete[] m_bufferNarrow;
+        m_lenMaxNarrow = length;
+        m_bufferNarrow = new char[m_lenMaxNarrow + 1];
+        m_bufferNarrow[0] = 0;
+    }
+
+#ifdef USE_WINAPI
+    wcstombs_s(&length, m_bufferNarrow, m_lenMaxNarrow, bufferWide, length);
+    length--; // do not include the null terminator.
+#else
+    state = {};
+    std::wcsrtombs(m_bufferNarrow, (const wchar_t**)&bufferWide, length, &state);
+#endif
+    m_bufferNarrow[length] = 0;
+    if (lenOut)
+        (*lenOut) = length - 1;
+    return m_bufferNarrow;
+}
+
+void JsonReader::TextConverter::Utf8ToMultiByte(const std::string stringUtf8, std::string& stringMB)
+{
+    const char* bufferMB = Utf8ToMultiByte(stringUtf8.c_str(), (int)stringUtf8.length());
+    if (bufferMB)
+        stringMB = bufferMB;
+    else
+        stringMB.clear();
+}
+
+const char* JsonReader::TextConverter::CodePointToUtf8(const uint32_t codePoint, size_t& lenOut)
+{
+#ifdef USE_WINAPI
+    lenOut = WideCharToMultiByte(CP_UTF8, 0, (const wchar_t*)&codePoint, 2, NULL, 0, NULL, NULL);
+
+    if (lenOut == 0)
+        return nullptr;
+
+    if (lenOut > m_lenMaxNarrow)
+    {
+        if (m_bufferNarrow)
+            delete[] m_bufferNarrow;
+        m_lenMaxNarrow = lenOut;
+        m_bufferNarrow = new char[m_lenMaxNarrow + 1];
+        m_bufferNarrow[0] = 0;
+    }
+
+    WideCharToMultiByte(CP_UTF8, 0, (const wchar_t*)&codePoint, 2, m_bufferNarrow, (int)lenOut, NULL, NULL);
+    lenOut--; // do not include the null terminator.
+    return m_bufferNarrow;
 #else
     m_str = m_codecvt.to_bytes(codePoint);
-    outLen = m_str.length();
+    lenOut = m_str.length();
     return m_str.c_str();
 #endif
 }
@@ -733,16 +751,9 @@ const char* JsonReader::STR::toNarrow()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // class JsonReader::JsonSource
 
-JsonReader::JsonInput::JsonInput()
-{
-    m_idx = (size_t)-1;
-    m_maxLen = 0;
-    m_buffer = nullptr;
-    m_isEOF = false;
-    m_position = 0;
-}
+JsonReader::JsonInput::JsonInput() { clear(); }
 
-JsonReader::JsonInput::~JsonInput() { release(); }
+JsonReader::JsonInput::~JsonInput() { clear(); }
 
 void JsonReader::JsonInput::init(const char* source, bool isFile)
 {
@@ -762,22 +773,23 @@ void JsonReader::JsonInput::init(const char* source, bool isFile)
     }
 }
 
-void JsonReader::JsonInput::release()
+void JsonReader::JsonInput::clear()
 {
     if (m_file.is_open())
     {
         m_file.close();
         if (m_buffer)
-        {
             delete[] m_buffer;
-            m_buffer = nullptr;
-        }
     }
 
-    m_idx = 0;
+    m_idx = (size_t)-1;
+    m_bufferLen = 0;
     m_maxLen = 0;
-    m_position = 0;
+    m_buffer = nullptr;
     m_isEOF = false;
+    m_position = 0;
+    m_progressStep = 0;
+    m_progressNext = 0;
 }
 
 bool JsonReader::JsonInput::openFile(const char* fileFullPath)
@@ -785,7 +797,12 @@ bool JsonReader::JsonInput::openFile(const char* fileFullPath)
     m_file.open(fileFullPath, std::ifstream::in | std::ios::binary);
     if (m_file.is_open())
     {
-        m_buffer = new char[FILE_BUFFER];
+        // Get the file size.
+        m_file.seekg(0, m_file.end);
+        m_maxLen = m_file.tellg();
+        m_file.seekg(0, m_file.beg);
+
+        m_buffer = new char[FILE_BUFFER_LEN];
         m_isEOF = false;
         fillBuffer();
         m_idx = (size_t)-1;
@@ -794,11 +811,12 @@ bool JsonReader::JsonInput::openFile(const char* fileFullPath)
     return false;
 }
 
-bool JsonReader::JsonInput::setBuffer(const char* bufferUtf8)
+bool JsonReader::JsonInput::setBuffer(const char* buffer)
 {
-    m_maxLen = strlen(bufferUtf8); // The input buffer must be null terminated.
+    m_bufferLen = strlen(buffer); // The input buffer must be null terminated.
+    m_maxLen = m_bufferLen;
     // Constness must be removed due to the assignment, but the content will not be modified.
-    m_buffer = const_cast<char*>(bufferUtf8);
+    m_buffer = const_cast<char*>(buffer);
     m_idx = (size_t)-1;
     return true;
 }
@@ -806,33 +824,48 @@ bool JsonReader::JsonInput::setBuffer(const char* bufferUtf8)
 void JsonReader::JsonInput::fillBuffer()
 {
     m_idx = 0;
-    m_maxLen = 0;
+    m_bufferLen = 0;
 
     if (m_isEOF == true)
         throwException("Unexpected end of file.");
 
     if (m_file.is_open()) // The buffer is only refilled if the source is a file.
     {
-        m_file.read(m_buffer, FILE_BUFFER);
-        m_maxLen = (size_t)m_file.gcount();
+        m_file.read(m_buffer, FILE_BUFFER_LEN);
+        m_bufferLen = (size_t)m_file.gcount();
     }
 }
 
-const char JsonReader::JsonInput::getNextChar(bool verbatim)
+bool JsonReader::JsonInput::findFirstChar()
+{
+    bool isValid = false;
+    char ch = 0;
+    while (!isValid)
+    {
+        ch = getNextChar();
+        if (m_isEOF)
+            return false;
+        isValid = (ch == '{' || ch == '[' || ch == '\"' || ch == 't' || ch == 'f' || ch == 'n' || ch == '-' ||
+                   (ch >= '0' && ch <= '9'));
+    }
+    return true;
+}
+
+char JsonReader::JsonInput::getNextChar(bool verbatim)
 {
     do
     {
-        if (++m_idx >= m_maxLen)
+        if (++m_idx >= m_bufferLen)
             fillBuffer();
-        if (m_maxLen == 0)
+        if (m_bufferLen == 0)
         {
             m_isEOF = true;
             return 0;
         }
         m_position++;
     } while (!verbatim &&
-        (m_buffer[m_idx] == ' ' || m_buffer[m_idx] == '\r' || m_buffer[m_idx] == '\n' || m_buffer[m_idx] == '\t' ||
-            m_buffer[m_idx] == ':' || m_buffer[m_idx] == ',' || m_buffer[m_idx] == '\0'));
+             (m_buffer[m_idx] == ' ' || m_buffer[m_idx] == '\r' || m_buffer[m_idx] == '\n' || m_buffer[m_idx] == '\t' ||
+              m_buffer[m_idx] == ':' || m_buffer[m_idx] == ',' || m_buffer[m_idx] == '\0'));
     return m_buffer[m_idx];
 }
 
@@ -844,9 +877,7 @@ char JsonReader::JsonInput::charToHex(char input)
         return (input - 'a' + 10);
     else if (input >= 'A' && input <= 'F')
         return (input - 'A' + 10);
-    else
-        throwException("Invalid hex digit '%c'.", input);
-    return 0;
+    throwException("Invalid hex digit '%c'.", input);
 }
 
 void JsonReader::JsonInput::readEscapeSequence(STR& text)
@@ -887,7 +918,7 @@ void JsonReader::JsonInput::readEscapeSequence(STR& text)
 
 void JsonReader::JsonInput::getEscapedCodePoint(STR& text)
 {
-    uint16_t escapeSequence = 0; // Format: \uXXXX.
+    uint16_t escapeSequence = 0; // 4 hex digits expected.
     for (int i = 0; i < 4; i++)
     {
         escapeSequence <<= 4;
@@ -902,14 +933,47 @@ void JsonReader::JsonInput::getEscapedCodePoint(STR& text)
     text.isAscii = false;
 }
 
+void JsonReader::JsonInput::goToPreviousChar()
+{
+    m_idx--;
+    m_position--;
+}
+
 void JsonReader::JsonInput::goToNextQuote()
 {
     while (m_buffer[m_idx] != '\"')
     {
-        if (++m_idx == m_maxLen)
+        if (++m_idx == m_bufferLen)
             fillBuffer();
         m_position++;
     }
+}
+
+void JsonReader::JsonInput::setProgressParams(int step, std::function<void(int)> progressCallback)
+{
+    m_progressStep = step;
+    m_progressNext = 0;
+    m_progressCallback = progressCallback;
+}
+
+double JsonReader::JsonInput::getProgress()
+{
+    return (m_maxLen > 0) ? ((double)m_position / (double)m_maxLen) * 100.0 : 0;
+}
+
+void JsonReader::JsonInput::notifyProgress()
+{
+    if ((m_position >= m_progressNext) && m_maxLen > 0)
+    {
+        m_progressCallback((int)getProgress());
+        m_progressNext = m_position + m_maxLen / m_progressStep;
+    }
+}
+
+void JsonReader::JsonInput::notifyProgressEnd()
+{
+    if (m_progressCallback != nullptr)
+        m_progressCallback(100);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

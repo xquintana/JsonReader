@@ -11,53 +11,52 @@
 #include <string>
 #include <vector>
 
-
 #ifdef _MSC_VER
 #define USE_WINAPI
 #endif
 
-// Reads JSON data and notifies its elements and values to the client.
+// Reads JSON data and notifies its elements and their values to the client.
 class JsonReader
 {
-public:
-    // Converts the encoding of the characters in a string.
+  public:
+    // Converts the character encoding of a string.
     // This class is public so it can be used externally as JsonReader::TextConverter (note that it is not thread-safe).
     class TextConverter
     {
-    public:
+      public:
         TextConverter();
         ~TextConverter();
 
-        // The following functions receive a string and its length and return the converted string (null terminated).
-        // If not NULL, the output length is stored in the 'outLen' argument (not including the null terminator).
+        // These functions receive a string and its length and return the converted string (null terminated).
+        // If not null, the output length is stored in the 'lenOut' argument (not including the null terminator).
         // The term 'MultiByte' here refers to a non-Unicode charset, where characters can be encoded with one
-        // or more bytes according to the current locale, such as CP1252 or GB18030.
-        const char* MultiByteToUtf8(const char* multibyte, const size_t multibyteLen, size_t* outLen = nullptr);
-        const char* Utf8ToMultiByte(const char* utf8, const size_t utf8Len, size_t* outLen = nullptr);
-        void Utf8ToMultiByte(const std::string utf8, std::string& str);
-        const char* WideToUtf8(const wchar_t* wide, const size_t wideLen, size_t* outLen = nullptr);
-        const wchar_t* Utf8ToWide(const char* utf8, const size_t utf8Len, size_t* outLen = nullptr);
-        void Utf8ToWide(const std::string utf8, std::wstring& wstr);
+        // or more bytes according to a locale such as ISO-8859-1 or GB18030.
+        const char* WideToUtf8(const wchar_t* bufferWide, const size_t lenWide, size_t* lenOut = nullptr);
+        const wchar_t* Utf8ToWide(const char* bufferUtf8, const size_t lenUtf8, size_t* lenOut = nullptr);
+        void Utf8ToWide(const std::string stringUtf8, std::wstring& stringWide);
+        const char* MultiByteToUtf8(const char* bufferMB, const size_t lenMB, size_t* lenOut = nullptr);
+        const char* Utf8ToMultiByte(const char* bufferUtf8, const size_t lenUtf8, size_t* lenOut = nullptr);
+        void Utf8ToMultiByte(const std::string stringUtf8, std::string& stringMB);
         // Encodes a 4-byte Unicode code point into UTF-8.
-        const char* CodePointToUtf8(const uint32_t codePoint, size_t& outLen);
+        const char* CodePointToUtf8(const uint32_t codePoint, size_t& lenOut);
 
-    protected:
-        char* m_narrowString;  // Holds the last decoded narrow string.
-        size_t m_narrowMaxLen; // Maximum length of the narrow string.
-        wchar_t* m_wideString; // Holds the last decoded wide string.
-        size_t m_wideMaxLen;   // Maximum length of the wide string.
+      protected:
+        char* m_bufferNarrow;  // Holds the last decoded narrow string.
+        size_t m_lenMaxNarrow; // Maximum length of the narrow string.
+        wchar_t* m_bufferWide; // Holds the last decoded wide string.
+        size_t m_lenMaxWide;   // Maximum length of the wide string.
 
 #ifndef USE_WINAPI
         // NOTE: The <codecvt> header has been deprecated in C++17.
         // Used here until a standard replacement is available.
         std::wstring_convert<std::codecvt_utf8<wchar_t>> m_codecvt;
-        // Auxiliary variables, made member by convenience:
+        // Auxiliary variables, made member by convenience.
         std::string m_str;
         std::wstring m_wstr;
 #endif
     };
 
-protected:
+  protected:
     // Represents a string.
     struct STR
     {
@@ -77,7 +76,7 @@ protected:
             return converter.Utf8ToWide(str, length);
         }
         void copy(const char* source, size_t sourceLen, // Sets the content of the internal string.
-            bool checkCapacity = false, bool checkEncoding = false);
+                  bool checkCapacity = false, bool checkEncoding = false);
 
         // Variables
         char* str;       // The string is internally stored as UTF-8.
@@ -87,8 +86,8 @@ protected:
         bool isQuoted;   // True if the string was enclosed between quotation marks in the JSON structure.
         bool useLocale;  // If true, the method 'toNarrow()' returns the string as multibyte according to the locale.
 
-    private:
-        static const int CAPACITY_DEFAULT = 1024; // Default amount of bytes available.
+      private:
+        static const int CAPACITY_DEFAULT = 1024; // Default number of bytes available.
         TextConverter converter;                  // Used to convert character encodings.
     };
 
@@ -113,7 +112,7 @@ protected:
     // Encapsulates the JSON input source, which can be a file or a buffer.
     class JsonInput
     {
-    public:
+      public:
         JsonInput();
         virtual ~JsonInput();
 
@@ -121,18 +120,20 @@ protected:
         // Otherwise, it's assumed to be a buffer and makes an internal copy.
         void init(const char* source, bool isFile);
         // Releases the internal buffer and closes the file if open.
-        void release();
+        void clear();
 
+        // Looks for the first valid character to process and returns 'true' if found.
+        bool findFirstChar();
         // Returns the next character to process.
         // If 'verbatim' is true, returns exactly the next character (for example, while reading strings or numbers).
         // Otherwise, discards irrelevant characters such as spaces or new lines between elements.
-        const char getNextChar(bool verbatim = false);
+        char getNextChar(bool verbatim = false);
         // Returns the current character read.
-        const char getCurrentChar() { return m_buffer[m_idx]; };
+        char getCurrentChar() { return m_buffer[m_idx]; };
         // Called when an escape sequence is found.
         void readEscapeSequence(STR& text);
         // Moves the buffer's index one position back.
-        void goToPreviousChar() { m_idx--; }
+        void goToPreviousChar();
         // Moves the buffer's index forward until a quotation mark is found.
         void goToNextQuote();
         // Returns true if no more data can be read from the source.
@@ -140,21 +141,38 @@ protected:
         // Returns the current absolute position in the input source.
         size_t getPosition() { return m_position; }
 
-    protected:
+        // Methods related to progress notification.
+
+        // Sets the progress increment and the callback to be notified.
+        void setProgressParams(int step, std::function<void(int)> progressCallback);
+        // Returns the progress as the percentage of the number of bytes read so far.
+        double getProgress();
+        // Notifies the progress when it goes beyond the increment.
+        void notifyProgress();
+        // Notifies that the parsing has finished.
+        void notifyProgressEnd();
+
+      protected:
         bool openFile(const char* fileFullPath);
-        bool setBuffer(const char* bufferUtf8);
+        bool setBuffer(const char* buffer);
         void fillBuffer();
         void getEscapedCodePoint(STR& text);
         char charToHex(char input);
 
-    protected:
+      protected:
         char* m_buffer;            // Buffer containing all or part of the input source.
-        size_t m_maxLen;           // Number of bytes available in the buffer.
+        size_t m_bufferLen;        // Number of bytes available in the buffer.
+        size_t m_maxLen;           // Total number of bytes to read from the input source.
         size_t m_idx;              // Index of the current character in the buffer.
         size_t m_position;         // Absolute character position of the input data.
         std::ifstream m_file;      // The input file, in case we are reading from a file.
         bool m_isEOF;              // True when the end has been reached.
         TextConverter m_converter; // Used to decode Unicode code points.
+
+        // Used to notify the progress.
+        int m_progressStep;                          // Increment of the percentage.
+        size_t m_progressNext;                       // Next progress threshold to be notified.
+        std::function<void(int)> m_progressCallback; // Callback to notify the progress.
     };
 
     // Wrappers of the client's callback target (function, lambda expression, etc.) that will receive the events.
@@ -162,30 +180,30 @@ protected:
     // -> Callback's base class.
     class Callback
     {
-    public:
-        Callback() {};
-        virtual ~Callback() {};
+      public:
+        Callback(){};
+        virtual ~Callback(){};
         virtual void notify(STR* value) = 0; // Executes a client's callback, optionally passing one string.
     };
     // -> Callback without arguments.
     class Callback0 : public Callback
     {
-    public:
+      public:
         Callback0(std::function<void()>& callback) { m_func = callback; }
         void notify(STR*) { m_func(); }
 
-    protected:
+      protected:
         std::function<void()> m_func;
     };
     // -> Callback receiving one string.
     class Callback1 : public Callback
     {
-    public:
+      public:
         Callback1(std::function<void(const char*)>& callback);
         Callback1(std::function<void(const wchar_t*)>& callback);
         void notify(STR* value);
 
-    protected:
+      protected:
         bool m_narrow; // True if the string is to be sent as a narrow string (multibyte or UTF-8).
         std::function<void(const char*)> m_funcNarrow;  // The argument is passed as a narrow string.
         std::function<void(const wchar_t*)> m_funcWide; // The argument is passed as a wide string.
@@ -203,7 +221,7 @@ protected:
         // The key is the name or path of the element.
         typedef std::map<const char*, Callback*, comparer> CALLBACK_MAP;
 
-    public:
+      public:
         Publisher();
 
         // Subscribes a callback to one type of event related to a specific element.
@@ -216,11 +234,11 @@ protected:
         // Returns the name of the current element.
         void getCurrentElementName(STR& elemName);
 
-    protected:
+      protected:
         // Finds a callback associated to the element described by 'nameOrPath' and, if found, calls it passing 'value'.
         void notify(CALLBACK_MAP* map, char* nameOrPath, STR* value);
 
-    protected:
+      protected:
         CALLBACK_MAP m_callbacksName; // Callbacks associated to element names.
         CALLBACK_MAP m_callbacksPath; // Callbacks associated to element paths.
         Callback* m_callbackAll;      // Callback used to notify an event on all elements that apply.
@@ -234,7 +252,7 @@ protected:
         CALLBACK_MAP::iterator m_iterator; // Auxiliary variable made member for convenience.
     };
 
-public:
+  public:
     // Main class declarations.
 
     JsonReader();
@@ -242,8 +260,8 @@ public:
 
     // Methods to process the JSON structure from a file or a buffer.
 
-    bool readFile(const char* fileFullPath);
-    bool readBuffer(const char* bufferUtf8); // The buffer must be null terminated and encoded in UTF-8.
+    bool readFile(const char* fileFullPath); // File contents must be encoded in UTF-8.
+    bool readBuffer(const char* buffer);     // The buffer must be null terminated and encoded in UTF-8.
 
     // Methods to subscribe to event types related to specific JSON elements (object found, array found, etc.).
 
@@ -283,11 +301,20 @@ public:
     void onPair(const char* elementUtf8, std::function<void(const char*)> callback);
     void onPair(const char* elementUtf8, std::function<void(const wchar_t*)> callback);
 
-    // Methods that return a list of unique paths of all elements found in a JSON data.
-    // They may help to find out the exact element's path in order to subscribe to its events.
+    // Methods related to progress notification.
+
+    // The callback 'progressCallback' will execute whenever the percentage of bytes read so far increments by 'step'.
+    // The step must range from 1 to 99 and it is a target value (the actual percentage is passed to the callback).
+    // To disable progress notification, set 'progressCallback' to null.
+    void onProgress(int step, std::function<void(int progress)> progressCallback);
+    // Returns the progress as the percentage of the current number of bytes read.
+    double getProgress() { return m_input.getProgress(); }
+
+    // Methods that return a list of unique paths of all elements found in a JSON text.
+    // These may help to find out the exact element's path in order to subscribe to its events.
 
     bool getPathsFromFile(const char* fileFullPath, std::set<std::wstring>& paths);
-    bool getPathsFromBuffer(const char* bufferUtf8, std::set<std::wstring>& paths);
+    bool getPathsFromBuffer(const char* buffer, std::set<std::wstring>& paths);
 
     // Methods that provide additional information from within the callback functions.
 
@@ -309,10 +336,15 @@ public:
     // Returns true if the current array item is of type string, number, boolean or null.
     bool isArrayItemValue() { return m_arrayItem.isValue; }
 
-    // Method to receive narrow string values in a non-Unicode multibyte encoding, such as CP1252 or GB18030.
-    // This feature, which is turned off by default, does not apply when the values are notified as wide chars.
+    // Method to receive narrow strings in a non-Unicode multibyte encoding such as ISO-8859-1 or GB18030.
+    // This conversion, which is turned off by default, does not apply when values are notified as wide char strings.
     // If 'useLocale' is true, 'locale' specifies the locale to use for encoding (make sure the locale is installed).
     void useLocale(bool useLocale, const char* locale = nullptr);
+
+    // Methods related to process cancellation.
+
+    void cancel() { m_cancel = true; }      // Stops reading further data.
+    bool isCancelled() { return m_cancel; } // Returns true if the reading has been cancelled.
 
     // Methods to get a description when an error is found.
 
@@ -323,7 +355,7 @@ public:
         return wsTmp;
     }
 
-protected:
+  protected:
     // Reads a file or buffer containing the JSON data encoded in UTF-8.
     // If 'isFile' is true, 'source' is the full path of the input file. Otherwise, it's a pointer to a UTF-8 buffer.
     // The optional argument 'pathList' returns a list of unique paths of all the elements found.
@@ -343,7 +375,7 @@ protected:
     bool parseTrue();
     bool parseFalse();
     bool parseNull();
-    bool isNumericCharacter(char ch); // True if 'ch' may be part of a number (digit, decimal, sign...).
+    bool isNumericCharacter(char ch);        // True if 'ch' may be part of a number (digit, decimal, sign...).
     void updateCurrentPath(size_t& pathLen); // Updates the length of the current path according to the context.
 
     // Notifies an event.
@@ -353,9 +385,9 @@ protected:
     void notify(Publisher* publisher, size_t namePos, size_t nameLen, size_t pathLen, STR* value = nullptr);
 
     // Throws a runtime exception from a variable argument list.
-    static void throwException(const char* format, ...);
+    [[noreturn]] static void throwException(const char* format, ...);
 
-protected:
+  protected:
     // Represents the JSON input stream.
     JsonInput m_input;
 
@@ -375,8 +407,10 @@ protected:
     STR m_currentElemName; // Auxiliary string that stores the name of the current element being notified.
                            // It is only updated when the client requests the current element's name.
 
-    // If true, UTF-8 strings are provided in a localized non-Unicode multibyte encoding.
-    bool m_useLocale;
+    // Flags
+    bool m_useLocale;      // If true, UTF-8 strings are notified as non-Unicode multibyte strings.
+    bool m_notifyProgress; // If true, the progress is notified.
+    bool m_cancel;         // If true, the parsing is interrupted.
 
     // Stores the description of the last error.
     std::string m_errDescription;

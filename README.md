@@ -10,12 +10,12 @@ It is based on the same idea as the [SAX](https://en.wikipedia.org/wiki/Simple_A
 
 _JsonReader_ is implemented as a C++ class. The API provides a set of methods that associate a callback with an event related to a JSON element (for example, when a certain key is found):
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;void **onObjectBegin(** _element_ , _callback_ **);** // The definition of the object _element_ starts.  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;void **onObjectEnd(** _element_ , _callback_ **);** // The definition of the object _element_ finishes.  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;void **onArrayBegin(** _element_ , _callback_ **);** // The definition of the array _element_ starts.  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;void **onArrayEnd(** _element_ , _callback_ **);** // The definition of the array _element_ finishes.  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;void **onArrayItem**( _element_ , _callback_ **);** // An item of the array _element_ is found.  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;void **onPair(** _element_ , _callback_ **);** // A key/value pair (where _element_ is the key) is found.  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;void **onObjectBegin(** _element_, _callback_ **);**&nbsp;&nbsp;&nbsp;&nbsp;// The definition of the object _element_ starts.  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;void **onObjectEnd(** _element_, _callback_ **);**&nbsp;&nbsp;&nbsp;&nbsp;// The definition of the object _element_ finishes.  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;void **onArrayBegin(** _element_, _callback_ **);**&nbsp;&nbsp;&nbsp;&nbsp;// The definition of the array _element_ starts.  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;void **onArrayEnd(** _element_, _callback_ **);**&nbsp;&nbsp;&nbsp;&nbsp;// The definition of the array _element_ finishes.  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;void **onArrayItem**( _element_, _callback_ **);**&nbsp;&nbsp;&nbsp;&nbsp;// An item of the array _element_ is found.  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;void **onPair(** _element_, _callback_ **);**&nbsp;&nbsp;&nbsp;&nbsp;// A key/value pair (where _element_ is the key) is found.  
 
 + **_element_** is the name or path of the element we want to receive the event from, passed as a UTF-8 or a wide character string. This argument can be null, meaning that we want to receive this event from all elements that apply (e.g. to get notified when any object is found).
 + **_callback_** represents the code we want to get called when that event on that element happens. It is of type [std::function](https://en.cppreference.com/w/cpp/utility/functional/function) so it can be any callable target such as a function or a lambda expression. The execution of the callback is synchronous, and therefore the next JSON element will not be processed until it is done.
@@ -33,39 +33,40 @@ jsonReader.onArrayBegin("users", []()
 
 In case the name of the target element can exist in different contexts (e.g. keys with the same name in different objects) or the element has no name (e.g. an unnamed object), the element's path must be used instead. Paths uniquely locate elements in the JSON data. See [below](#using-the-elements-path) for an explanation about how paths are built.
 
-The methods **onArrayItem** and **onPair** respectively supply the array item's value and the key's value to the callback as a string pointer, provided that the value is of type string, number or boolean. Otherwise this pointer is null.
+The methods **onArrayItem()** and **onPair()** respectively supply the array item's value and the key's value to the callback as a string pointer, provided that the value is of type string, number or boolean. Otherwise this pointer is null.
 
 Values can be received as:
 
 + UTF-8 strings.
 + Wide character strings.
-+ Non-Unicode multibyte strings, encoded according to the current locale (CP1252, GB18030, etc.).
++ Non-Unicode multibyte strings, encoded according to a locale such as ISO-8859-1 or GB18030.
 
 Example:
 ```    
 jsonReader.onPair("id", [](const char* value)
 {
-    // Print the value of the key 'id'.
+    // Print the value of 'id'.
     if (value)
         std::cout << "id: " << value << std::endl;
 });
 ```    
 
-Once the callbacks have been defined, the next step is to start processing the JSON data. This is done by calling the methods **readFile** or **readBuffer** for reading from a file or a null terminated buffer:
+Once the callbacks have been defined, the next step is to start processing the JSON data. This is done by calling the methods **readFile()** or **readBuffer()** for reading from a file or a null terminated buffer:
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;bool **readFile(** const char* _fileFullPath_ **);**  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;bool **readBuffer(** const char* _bufferUtf8_ **);**  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;bool **readBuffer(** const char* _buffer_ **);**  
 
-In either case, the JSON data must be encoded in UTF-8.  
+In either case, JSON data must be encoded in UTF-8.  
 The buffer is accessed directly, so it must not be modified until the process is finished.  
-If a problem occurs while parsing the data, these methods return _false_ and a description of the error can be obtained by calling the method **getErrorDescription**.  
+
+If a problem occurs while parsing the data, these methods return _false_ and a description of the error can be obtained by calling the method **getErrorDescription()**.  
 
 From inside the callback it is possible to get information about the current context through the following methods:
 
-+ **getCurrentElementPath** and **getCurrentElementName**. If the callback was not associated to a specific element (by setting the first argument '_element_' to null, as explained before), these methods can be used to find out the JSON path or the name of the current element being notified. There are different versions available: returning narrow or wide strings, by reference or by value.
-+ **isValueQuoted**. Returns _true_ if the value was quoted in the JSON data. Since values are notified as strings, this method allows to distinguish between, for example, reading the number 123 and the string "123", or reading the boolean _true_ and the string "true". Anyway, this distinction should not be necessary, as the type of the data passed to the callback is supposed to be known in advance.
-+ **isPathAscii**. Returns _true_ if the current path contains only ASCII characters.
-+ **isArrayItemValue**. Returns _true_ if the array item being notified is of type string, number, boolean or null. Therefore, it returns _false_ if this item is an object or an array.
++ **getCurrentElementPath()** and **getCurrentElementName()**. If the callback was not associated to a specific element (by setting the first argument '_element_' to null, as explained before), these methods can be used to find out the JSON path or the name of the current element being notified. There are different versions available: returning narrow or wide strings, by reference or by value.
++ **isValueQuoted()**. Returns _true_ if the value was quoted in the JSON data. Since values are notified as strings, this method allows distinguishing between, for example, reading the number 123 and the string "123", or reading the boolean _true_ and the string "true". Anyway, this distinction should not be necessary, as the type of the data passed to the callback is supposed to be known in advance.
++ **isPathAscii()**. Returns _true_ if the current path contains only ASCII characters.
++ **isArrayItemValue()**. Returns _true_ if the array item being notified is of type string, number, boolean or null. Therefore, it returns _false_ if this item is an object or an array.
 
 In the following example, we get notified every time an item from any array is found. Then, we find out the name of each array and check if the current item is an actual value (string, number, boolean or null) or not (object or array).
 ```
@@ -95,25 +96,63 @@ jsonReader.onArrayItem((const char*)nullptr, [&jsonReader](const char* value)
     }
 });
 ```
+### Progress notification and cancellation
 
-If one or more callbacks handle the input values as narrow strings, these are passed as UTF-8 by default. However, by calling the method **useLocale**, values can be received as non-Unicode multibyte strings, according to the current locale: 
+The progress, expressed as the number of bytes read so far in percentage, can be obtained in two ways:
++ Calling the method **getProgress()** (e.g. from a timer).
++ Registering a callback using the method **onProgress()**, which expects two arguments:
+    + **_step_** as the increment of the percentage to notify. It must range from 1 to 99. For example, a value of 10 will send a notification every 10%. This is a target value; the actual progress value is passed to the callback.
+    + **_callback_** as the code to execute whenever the progress percentage increments beyond **_step_**. It receives the current percentage as an integer. It is executed synchronously, so it should not be time consuming (e.g. just update a member variable).
+
+See the [header file](JsonReader.h) for the actual C++ syntax.
+
+The progress can be cancelled by calling the method **cancel()**. The reader will exit after the current item is processed.  
+Since the reader's thread is busy parsing the JSON data, this method must be called from a separate thread.   
+The method **isCancelled()** returns _true_ if the process was cancelled.
+
+### Support for non-Unicode multibyte strings
+
+If one or more callbacks handle the input values as narrow strings, these are passed as UTF-8 by default. However, by calling the method **useLocale()**, values can be encoded according to a locale (ISO-8859-1, GB18030, etc.): 
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;void **useLocale(** bool _useLocale_, const char* _locale_ **);**
 
-The boolean _useLocale_ enables or disables the localization of the strings extracted from the JSON data. If _true_, the argument _locale_ specifies the identifier of the locale to use for the conversion. Please make sure that the proper identifier is used, and that the locale is installed in your computer.  
-This method must be called before reading the JSON data.  
+The boolean _useLocale_ enables or disables the conversion of the strings extracted from the JSON data. If _true_, the argument _locale_ specifies the identifier of the locale to use for the conversion. Please make sure that the proper identifier is used, and that the locale is installed in your computer.  
+
+In this example, a name containing the letter 'e' with acute accent is converted to a non-Unicode string based on the Latin alphabet:  
+```
+const char* data = R"({ "name": "Ren\u00E9e" })"; // 'Renée'
+JsonReader jsonReader;
+
+#ifdef _MSC_VER  // Windows
+jsonReader.useLocale(true, ".1252");
+#else  // Linux (check that the locale is installed with 'locale -a')
+jsonReader.useLocale(true, "en_US.ISO-8859-1");
+#endif
+
+jsonReader.onPair("name", [](const char* value)
+{
+    if (value)
+    {
+        // Output is 0x52 (R) 0x65 (e) 0x6E (n) 0xE9 (é) 0x65 (e)
+        for (size_t i = 0; i < strlen(value); i++)
+            printf("0x%02X ", (unsigned char)value[i]);
+    }
+});
+// Read the JSON data.
+jsonReader.readBuffer(data);
+```
  
-### Full Example
+### Full example
 
-The following example reads and displays user data (name and identifier) from a set of key/value pairs and it also enumerates the colors contained in a list.
+The following example extracts user data (name and identifier) from a set of key/value pairs and it also enumerates the colors contained in a list.
 
-The method **onPair** is used to associate callbacks with the events of finding the keys '_name_' and '_id_'.  
-In the same way, the method **onArrayItem** is used to set a callback that will be triggered for each item found in the '_colors_' array.  
+The method **onPair()** is used to associate callbacks with the events of finding the keys '_name_' and '_id_'.  
+In the same way, the method **onArrayItem()** is used to set a callback that will be triggered for each item found in the '_colors_' array.  
 These callbacks receive a string with the corresponding value.
 
 ```
 // Input data
-const char* json = R"s(
+const char* data = R"s(
 {
 "users": [
     {
@@ -157,7 +196,7 @@ jsonReader.onArrayItem("colors", [](const char* value)
 });
 
 // Start processing the JSON data.
-jsonReader.readBuffer(json);
+jsonReader.readBuffer(data);
 ```
 The output is:
 ```
@@ -172,7 +211,7 @@ Color: green
 Color: blue
 ```
 
-By capturing variables in the lambda expressions you can do more interesting things such as storing the received values in member variables.  
+By capturing variables in the lambda expressions, you can do more interesting things such as storing the received values in member variables.  
 See another example [here](Sample.cpp).
 
 ### Using the element's path
@@ -193,7 +232,7 @@ jsonReader.onPair("{users[{id", [](const char* value)
 In order to help finding out the path of an element, the following methods are provided:
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;bool **getPathsFromFile(** const char* _fileFullPath_, std::set`<std::wstring>`& _paths_ **);**  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;bool **getPathsFromBuffer(** const char* _bufferUtf8_, std::set`<std::wstring>`& _paths_ **);**
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;bool **getPathsFromBuffer(** const char* _buffer_, std::set`<std::wstring>`& _paths_ **);**
 
 These return the unique paths of all elements found in the JSON data contained in a file or UTF-8 buffer. 
 In the previous example, they would return the following paths:
@@ -211,13 +250,13 @@ Once the needed paths have been found out, the call to these methods can be remo
 
 The class _JsonReader_ uses a nested class named _TextConverter_ to convert text to different encodings:
 
-* Multibyte string to UTF-8 string.
-* UTF-8 string to Multibyte string.
-* Wide character string to UTF-8 string.
-* UTF-8 string to Wide character string.
-* Unicode 4-bytes code point to UTF-8 character.
++ Wide character string to UTF-8 string.
++ UTF-8 string to wide character string.
++ Multibyte string to UTF-8 string.
++ UTF-8 string to multibyte string.
++ Unicode 4-bytes code point to UTF-8 character.
 
-The term 'multibyte' refers here to a non-Unicode multibyte string encoded according to the current locale.  
+The term 'Multibyte' here refers to a non-Unicode charset, where characters can be encoded with one or more bytes according to a locale such as ISO-8859-1 or GB18030.  
 
 This class is public so it can be used externally and even independently of the main class.  
 
@@ -228,18 +267,23 @@ JsonReader::TextConverter converter;
 std::wstring input = L"café";
 std::string output = converter.WideToUtf8(input.c_str(), input.length());
 
-for (const unsigned char &ch : output)
+for (const unsigned char& ch : output)
     printf("0x%02X ", ch); // UTF-8 output is 0x63 0x61 0x66 0xC3 0xA9 ('cafÃ©')
 ```
-
+Please note that this class is not thread-safe.  
 See the [header file](JsonReader.h) for more details.
+
+
+## Set-up
+
+Add the files `JsonReader.cpp` and `JsonReader.h` to your project and include `JsonReader.h` in the source file. 
 
 
 ## Constraints
 
-* JSON data must be encoded in UTF-8.
-* The compiler must support C++ 11.
-* This code is not thread-safe.  
++ JSON data must be encoded in UTF-8.
++ The compiler must support C++ 11.
++ To read multiple JSON inputs in parallel, a different instance for each input must be used.  
 
 
 ## Portability
@@ -248,8 +292,8 @@ It has been tested on Windows 10 (Visual Studio 2017), Ubuntu 14.04 LTS (g++ 5.5
 
 Notes on Linux:
 
-* Use _g++_ version 5.5 or later, and compile with the flag _-std=c++11_.
-* The _codecvt_ header is used to perform the text encoding. This header has been deprecated from C++17, but there is no standard replacement yet. If this is an issue, you can replace it with your own code or with a third party library such as [Boost](https://www.boost.org/).
++ Use _g++_ version 5.5 or later, and compile with the flag _-std=c++11_.
++ The _codecvt_ header is used to perform the text encoding. This header has been deprecated from C++17, but there is no standard replacement at the time of writing. If this is an issue, you can replace it with your own code or with a third-party library such as [Boost](https://www.boost.org/).
 
 
 ## License
